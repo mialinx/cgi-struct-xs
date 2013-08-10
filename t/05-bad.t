@@ -39,24 +39,25 @@ my @errs;
 my $hval = build_cgi_struct \%inp, \@errs;
 
 # Should have a warning about the mismatches
-ok(grep(/ender for \{ in foo]/, @errs), "Got error for h{foo]");
-ok(grep(/ender for \[ in 0}/, @errs), "Got error for a[0}");
+ok(grep(/Not balanced delimiter for h\{foo\]/, @errs), "Got error for h{foo]");
+ok(grep(/Not balanced delimiter for a\[0\}/, @errs), "Got error for a[0}");
 
 # And the missing
-ok(grep(/ender for \{ in bar/, @errs), "Got error for h{bar");
+ok(grep(/Not balanced delimiter for h\{bar/, @errs), "Got error for h{bar");
 
 # Multiple?
-ok(grep(/ender for \{ in  for h\{\{\{}/, @errs), "Got error for h{{{}");
+ok(grep(/Not balanced delimiter for h\{\{\{}/, @errs), "Got error for h{{{}");
 
 # Plus the non-integer keys
-ok(grep(/should be a number, not bar in a\[bar]/, @errs),
+ok(grep(/Array index should be a number for a\[bar\]/, @errs),
    "Got error for a[bar]");
-ok(grep(/should be a number, not 0bar in a\[0bar]/, @errs),
+ok(grep(/Array index should be a number for a\[0bar\]/, @errs),
    "Got error for a[0bar]");
 
 # Bad starting char
-ok(grep(/unexpected initial char in \{xyz/, @errs),
+ok(grep(/Unexpected initial char '\{' for \{xyz/, @errs),
    "Got error for {xyz");
+diag(explain(\@errs));
 
 # No key
 ok(grep(/Zero-length name element found in h\{}/, @errs),

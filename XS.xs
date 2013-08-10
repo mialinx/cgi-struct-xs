@@ -4,11 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define PUSH_ERR(err, msg)               \
-    if (err) {                           \
-        av_push(err, newSVpv((msg), 0)); \
-    }
-
 #define CONF_GET(conf, key, default)                    \
     ({                                                  \
         SV** val = hv_fetch(conf, key, strlen(key), 0); \
@@ -16,8 +11,6 @@
     })
 
 #define STATE_MASK 0xFF
-#define PT_HASH 1
-#define PT_ARRAY 2
 #define DBG1(fmt, ...) if (opts->debug > 0) { fprintf(stderr, fmt, ##__VA_ARGS__); }
 #define DBG2(fmt, ...) if (opts->debug > 1) { fprintf(stderr, fmt, ##__VA_ARGS__); }
 
@@ -39,21 +32,13 @@ typedef enum input {
     I_EN = 0x07  // fake end-of-line char
 } Input;
 
-typedef enum state {
-    S_RD = 0x00, // normal reading
-    S_RK = 0x01, // reading key inside {}
-    S_RI = 0x02, // reading index inside []
-    S_RC = 0x03, // reading controll . [ or {
-    S_EN = 0x04, // end state
-    S_ER = 0x05  // error state
-} State;
-
 typedef enum action {
     A_EC = 0x0200, // eat char
     A_ED = 0x0800, // eat digit
     A_CH = 0x1000, // create hash (vivify)
     A_CA = 0x2000, // create array (vivify)
-    A_CV = 0x4000  // create scalar
+    A_CV = 0x4000, // put scalar
+    A_AA = 0x8000  // put scalar-or-array (auto-arrays)
 } Action;
 
 static Input classes[] = {
@@ -91,12 +76,43 @@ static Input classes[] = {
     I_CH, I_CH, I_CH, I_CH, I_CH, I_CH, I_CH, I_CH
 };
 
-static U32 machine[][8] = {
-/*          I_DT,         I_LS,         I_RS,       I_LC,         I_RC,     I_DI,       I_CH,       I_EN       
-/*S_RD*/ {  S_RD|A_CH,    S_RI|A_CA,    S_ER,       S_RK|A_CH,    S_ER,     S_RD|A_EC,  S_RD|A_EC,  S_EN|A_CV },
-/*S_RK*/ {  S_ER,         S_ER,         S_ER,       S_ER,         S_RC,     S_RK|A_EC,  S_RK|A_EC,  S_ER      },
-/*S_RI*/ {  S_ER,         S_ER,         S_RC,       S_ER,         S_ER,     S_RI|A_ED,  S_ER,       S_ER      },
-/*S_RC*/ {  S_RD|A_CH,    S_RI|A_CA,    S_ER,       S_RK|A_CH,    S_ER,     S_ER,       S_ER,       S_EN|A_CV }
+typedef enum state {
+    S_FN = 0x00, // first char in normal key
+    S_RN = 0x01, // reading normal key
+    S_FK = 0x02, // first char of key inside {}
+    S_RK = 0x03, // reading key inside {}
+    S_FI = 0x04, // first digit of index inside [], checking auto-array
+    S_RI = 0x05, // reading index inside []
+    S_RC = 0x06, // reading controll . [ or {
+    S_EN = 0x07, // end state
+    S_E1 = 0x08, // error: delimeter not balanced
+    S_E2 = 0x09, // error: index should be a number
+    S_E3 = 0x0a, // error: unexpected initial char
+    S_E4 = 0x0b, // error: zero-length name
+    S_E5 = 0x0c, // error: unexpected controll char
+    S_I1 = 0x0d, // internal error: unexpected structure
+} State;
+
+static U32 machine_dot[][8] = {
+/*          I_DT,         I_LS,         I_RS,       I_LC,         I_RC,         I_DI,       I_CH,       I_EN       
+/*S_FN*/ {  S_E3,         S_E3,         S_E3,       S_E3,         S_E3,         S_RN|A_EC,  S_RN|A_EC,  S_E4      }, 
+/*S_RN*/ {  S_RN|A_CH,    S_FI|A_CA,    S_RN|A_EC,  S_FK|A_CH,    S_RN|A_EC,    S_RN|A_EC,  S_RN|A_EC,  S_EN|A_CV },
+/*S_FK*/ {  S_E1,         S_E1,         S_E1,       S_E1,         S_E4,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
+/*S_RK*/ {  S_E1,         S_E1,         S_E1,       S_E1,         S_RC,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
+/*S_FI*/ {  S_E2,         S_E1,         S_EN|A_AA,  S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
+/*S_RI*/ {  S_E2,         S_E1,         S_RC,       S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
+/*S_RC*/ {  S_RN|A_CH,    S_FI|A_CA,    S_E5,       S_FK|A_CH,    S_E5,         S_E5,       S_E5,       S_EN|A_CV }
+};
+
+static U32 machine_nodot[][8] = {
+/*          I_DT,         I_LS,         I_RS,       I_LC,         I_RC,         I_DI,       I_CH,       I_EN       
+/*S_FN*/ {  S_RN|A_EC,    S_E3,         S_E3,       S_E3,         S_E3,         S_RN|A_EC,  S_RN|A_EC,  S_E4      }, 
+/*S_RN*/ {  S_RN|A_EC,    S_FI|A_CA,    S_RN|A_EC,  S_FK|A_CH,    S_RN|A_EC,    S_RN|A_EC,  S_RN|A_EC,  S_EN|A_CV },
+/*S_FK*/ {  S_RK|A_EC,    S_E1,         S_E1,       S_E1,         S_E4,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
+/*S_RK*/ {  S_RK|A_EC,    S_E1,         S_E1,       S_E1,         S_RC,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
+/*S_FI*/ {  S_E2,         S_E1,         S_EN|A_AA,  S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
+/*S_RI*/ {  S_E2,         S_E1,         S_RC,       S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
+/*S_RC*/ {  S_E5,         S_FI|A_CA,    S_E5,       S_FK|A_CH,    S_E5,         S_E5,       S_E5,       S_EN|A_CV }
 };
 
 SV**
@@ -114,7 +130,7 @@ void
 _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Opts* opts)
 {
     if (SvTYPE((SV*)ptr) == SVt_PVHV) {
-        DBG1("hv_store ptr %p part_key %s park_klen %d val %p (type %d)\n", ptr, part_key, part_klen, val, SvTYPE(val));
+        DBG1("hv_store ptr %p part_key '%s' park_klen %d val %p (type %d)\n", ptr, part_key, part_klen, val, SvTYPE(val));
         hv_store((HV*)ptr, part_key, part_klen, val, 0);
     }
     else {
@@ -124,27 +140,32 @@ _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Op
 }
 
 void 
-_handle_pair(const char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
+_handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
 {
     U32 pos = 0;
     U32 mv = 0;
     Input inp = I_CH;
-    State st = S_RD;
+    State st = S_RN;
+    U32 (*machine)[8] = opts->nodot ? machine_nodot : machine_dot;
 
     U32 part_idx = 0;
-    const char* part_key = key;
+    const unsigned char* part_key = key;
     U32 part_klen = 0;
 
     void* ptr = ov;
     void* next = NULL;
 
+    DBG1("key '%s' klen %d\n", key, klen);
+
     for (pos = 0; pos <= klen && st < S_EN; pos++) {
+        DBG1("chr %c %u\n", key[pos], key[pos]);
+        DBG1("class %d\n", classes[key[pos]]);
         inp = pos == klen ? I_EN : classes[key[pos]];
         mv = machine[st][inp];
 
-        DBG1("st %d pos %d chr %c(%d) inp %d -> st %d\n", st, pos, key[pos], (int)key[pos], inp, mv & 0xFF);
+        DBG1("st %d pos %d chr '%c(%d)' inp %d -> st %d\n", st, pos, key[pos], (int)key[pos], inp, mv & STATE_MASK);
 
-        st = mv & 0xFF;
+        st = mv & STATE_MASK;
         if (mv & A_EC) {
             part_klen++;
         }
@@ -162,12 +183,13 @@ _handle_pair(const char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
                     next = SvRV(*next_ptr);
                 }
                 else {
-                    st = S_ER;
+                    st = S_I1;
                 }
             }
             ptr = next;
             part_key = key + pos + 1; 
             part_klen = 0;
+            part_idx = 0;
         }
         if (mv & A_CA) {
             SV** next_ptr = _fetch(ptr, part_key, part_klen, part_idx);
@@ -180,12 +202,13 @@ _handle_pair(const char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
                     next = SvRV(*next_ptr);
                 }
                 else {
-                    st = S_ER;
+                    st = S_I1;
                 }
             }
             ptr = next;
             part_key = key + pos + 1; 
             part_klen = 0;
+            part_idx = 0;
         }
         if (mv & A_CV) {
             if (opts->nullsplit && SvPOK(val)) {
@@ -210,16 +233,68 @@ _handle_pair(const char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
             }
             _store(ptr, part_key, part_klen, part_idx, newSVsv(val), opts);
         }
+        if (mv & A_AA) {
+            if (SvROK(val) && SvTYPE(SvRV(val)) == SVt_PVAV) {
+                AV* _n = (AV*) next;
+                AV* _v = (AV*) SvRV(val);
+                U32 i = 0;
+                U32 l = av_len(_v); // last index
+                av_fill(_n, l);
+                for (i = 0; i <= l; i++) {
+                    // TODO: optimize copying
+                    SV** el = av_fetch(_v, i, 0);
+                    if (el) { 
+                        SvREFCNT_inc(*el);
+                        av_store(_n, i, *el);
+                    }
+                }
+            }
+            else {
+                _store(ptr, part_key, part_klen, part_idx, newSVsv(val), opts);
+            }
+        }
     }
     DBG1("final state %d\n\n", st);
+
+    // normal return
     if (st == S_EN) {
         return;
     }
-    else {
-        // TODO: differ errors
-        PUSH_ERR(err, "some error");
-        return;
+
+    // error handling if needed
+    if (err) {
+        char msg[1000];
+        # define ERR(fmt, ...) snprintf(msg, sizeof(msg), fmt, ##__VA_ARGS__);
+        switch (st) {
+            case S_EN:
+                break;
+            case S_E1:
+                ERR("Not balanced delimiter for %s", key);
+                break;
+            case S_E2:
+                ERR("Array index should be a number for %s", key);
+                break;
+            case S_E3:
+                ERR("Unexpected initial char '%c' for %s", key[0], key);
+                break;
+            case S_E4:
+                ERR("Zero-length key name for %s", key);
+                break;
+            case S_E5:
+                ERR("Delimeter expected at %s for %s", key + pos, key);
+                break;
+            case S_I1:
+                ERR("Internal: unexpected structure for %s", key);
+                break;
+            default:
+                ERR("Internal: unexpected final state %d for %s", st, key); 
+                break;
+        }
+        # undef ERR
+        av_push(err, newSVpv((msg), 0));
     }
+
+    return;
 }
 
 

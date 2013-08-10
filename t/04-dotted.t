@@ -78,5 +78,5 @@ ok(grep(/^x\.y$/, keys %{$hval->{h}}), 'x.y name translated');
 
 # Double check that it gets an error without nodot
 $hval = build_cgi_struct \%inp, \@errs;
-ok(grep(/ender for \{ in x for h\{x.y}/, @errs),
+ok(grep(/Not balanced delimiter for h\{x.y}/, @errs),
    'without nodot properly failed');
