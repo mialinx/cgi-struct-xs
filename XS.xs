@@ -10,6 +10,7 @@
         val ? SvUV(*val) : (default);                   \
     })
 
+#define BUF_LEN 1024
 #define STATE_MASK 0xFF
 #define DBG1(fmt, ...) if (opts->debug > 0) { fprintf(stderr, fmt, ##__VA_ARGS__); }
 #define DBG2(fmt, ...) if (opts->debug > 1) { fprintf(stderr, fmt, ##__VA_ARGS__); }
@@ -87,35 +88,57 @@ typedef enum state {
     S_EN = 0x07, // end state
     S_E1 = 0x08, // error: delimeter not balanced
     S_E2 = 0x09, // error: index should be a number
-    S_E3 = 0x0a, // error: unexpected initial char
-    S_E4 = 0x0b, // error: zero-length name
-    S_E5 = 0x0c, // error: unexpected controll char
-    S_I1 = 0x0d, // internal error: unexpected structure
+    S_E3 = 0x0a, // error: zero-length key name 
+    S_E4 = 0x0b, // error: unexpected controll char
+    S_E5 = 0x0c, // error: type mismatch - array found
+    S_E6 = 0x0d, // error: type mismatch - hash found
 } State;
 
-static U32 machine_dot[][8] = {
+static U32 machine[][8] = {
 /*          I_DT,         I_LS,         I_RS,       I_LC,         I_RC,         I_DI,       I_CH,       I_EN       
-/*S_FN*/ {  S_E3,         S_E3,         S_E3,       S_E3,         S_E3,         S_RN|A_EC,  S_RN|A_EC,  S_E4      }, 
-/*S_RN*/ {  S_RN|A_CH,    S_FI|A_CA,    S_RN|A_EC,  S_FK|A_CH,    S_RN|A_EC,    S_RN|A_EC,  S_RN|A_EC,  S_EN|A_CV },
-/*S_FK*/ {  S_E1,         S_E1,         S_E1,       S_E1,         S_E4,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
+/*S_FN*/ {  S_E3,         S_E3,         S_E3,       S_E3,         S_E3,         S_RN|A_EC,  S_RN|A_EC,  S_E3      }, 
+/*S_RN*/ {  S_FN|A_CH,    S_FI|A_CA,    S_RN|A_EC,  S_FK|A_CH,    S_RN|A_EC,    S_RN|A_EC,  S_RN|A_EC,  S_EN|A_CV },
+/*S_FK*/ {  S_E1,         S_E1,         S_E1,       S_E1,         S_E3,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
 /*S_RK*/ {  S_E1,         S_E1,         S_E1,       S_E1,         S_RC,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
 /*S_FI*/ {  S_E2,         S_E1,         S_EN|A_AA,  S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
 /*S_RI*/ {  S_E2,         S_E1,         S_RC,       S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
-/*S_RC*/ {  S_RN|A_CH,    S_FI|A_CA,    S_E5,       S_FK|A_CH,    S_E5,         S_E5,       S_E5,       S_EN|A_CV }
+/*S_RC*/ {  S_FN|A_CH,    S_FI|A_CA,    S_E4,       S_FK|A_CH,    S_E4,         S_E4,       S_E4,       S_EN|A_CV }
 };
 
-static U32 machine_nodot[][8] = {
-/*          I_DT,         I_LS,         I_RS,       I_LC,         I_RC,         I_DI,       I_CH,       I_EN       
-/*S_FN*/ {  S_RN|A_EC,    S_E3,         S_E3,       S_E3,         S_E3,         S_RN|A_EC,  S_RN|A_EC,  S_E4      }, 
-/*S_RN*/ {  S_RN|A_EC,    S_FI|A_CA,    S_RN|A_EC,  S_FK|A_CH,    S_RN|A_EC,    S_RN|A_EC,  S_RN|A_EC,  S_EN|A_CV },
-/*S_FK*/ {  S_RK|A_EC,    S_E1,         S_E1,       S_E1,         S_E4,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
-/*S_RK*/ {  S_RK|A_EC,    S_E1,         S_E1,       S_E1,         S_RC,         S_RK|A_EC,  S_RK|A_EC,  S_E1      },
-/*S_FI*/ {  S_E2,         S_E1,         S_EN|A_AA,  S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
-/*S_RI*/ {  S_E2,         S_E1,         S_RC,       S_E1,         S_E1,         S_RI|A_ED,  S_E2,       S_E1      },
-/*S_RC*/ {  S_E5,         S_FI|A_CA,    S_E5,       S_FK|A_CH,    S_E5,         S_E5,       S_E5,       S_EN|A_CV }
-};
+static char*
+_key_part(const char* key, U32 from, U32 to)
+{
+    static char tmp[BUF_LEN];
+    U32 len = to - from;
+    U32 copy_len = BUF_LEN - 1 < len ? BUF_LEN - 1 : len;
+    strncpy(tmp, key + from, copy_len);
+    tmp[copy_len] = '\0';
+    return tmp;
+}
 
-SV**
+static SV*
+_dclone(SV* sv)
+{
+    I32 count;
+    SV* res;
+    if (!SvROK(sv)) {
+        return sv_mortalcopy(sv);
+    }
+    dSP;
+    PUSHMARK(SP);
+    XPUSHs(sv);
+    PUTBACK;
+    count = call_pv("Storable::dclone", G_SCALAR);
+    if (count != 1) {
+        croak("Storable::dclone call failed\n");
+    }
+    SPAGAIN;
+    res = POPs;
+    PUTBACK;
+    return res;
+}
+
+static SV**
 _fetch(void* ptr, const char* part_key, U32 part_klen, U32 part_idx)
 {
     if (SvTYPE((SV*)ptr) == SVt_PVHV) {
@@ -126,7 +149,7 @@ _fetch(void* ptr, const char* part_key, U32 part_klen, U32 part_idx)
     }
 }
 
-void
+static void
 _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Opts* opts)
 {
     if (SvTYPE((SV*)ptr) == SVt_PVHV) {
@@ -139,14 +162,13 @@ _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Op
     }
 }
 
-void 
+static void 
 _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
 {
     U32 pos = 0;
     U32 mv = 0;
     Input inp = I_CH;
-    State st = S_RN;
-    U32 (*machine)[8] = opts->nodot ? machine_nodot : machine_dot;
+    State st = S_FN;
 
     U32 part_idx = 0;
     const unsigned char* part_key = key;
@@ -161,6 +183,9 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
         DBG1("chr %c %u\n", key[pos], key[pos]);
         DBG1("class %d\n", classes[key[pos]]);
         inp = pos == klen ? I_EN : classes[key[pos]];
+        if (inp == I_DT && opts->nodot) {
+            inp = I_CH;
+        }
         mv = machine[st][inp];
 
         DBG1("st %d pos %d chr '%c(%d)' inp %d -> st %d\n", st, pos, key[pos], (int)key[pos], inp, mv & STATE_MASK);
@@ -183,7 +208,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                     next = SvRV(*next_ptr);
                 }
                 else {
-                    st = S_I1;
+                    st = S_E5;
                 }
             }
             ptr = next;
@@ -202,7 +227,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                     next = SvRV(*next_ptr);
                 }
                 else {
-                    st = S_I1;
+                    st = S_E6;
                 }
             }
             ptr = next;
@@ -263,7 +288,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
 
     // error handling if needed
     if (err) {
-        char msg[1000];
+        char msg[BUF_LEN];
         # define ERR(fmt, ...) snprintf(msg, sizeof(msg), fmt, ##__VA_ARGS__);
         switch (st) {
             case S_EN:
@@ -275,16 +300,21 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                 ERR("Array index should be a number for %s", key);
                 break;
             case S_E3:
-                ERR("Unexpected initial char '%c' for %s", key[0], key);
+                if (pos == 1) {
+                    ERR("Unexpected initial char '%c' for %s", key[0], key);
+                }
+                else {
+                    ERR("Zero-length key name for %s", key);
+                }
                 break;
             case S_E4:
-                ERR("Zero-length key name for %s", key);
-                break;
-            case S_E5:
                 ERR("Delimeter expected at %s for %s", key + pos, key);
                 break;
-            case S_I1:
-                ERR("Internal: unexpected structure for %s", key);
+            case S_E5:
+                ERR("Type mismatch: %s already used as ArrayRef for %s", _key_part(key, 0, pos-1), key);
+                break;
+            case S_E6:
+                ERR("Type mismatch: %s already used as HashRef for %s", _key_part(key, 0, pos-1), key);
                 break;
             default:
                 ERR("Internal: unexpected final state %d for %s", st, key); 
@@ -300,12 +330,14 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
 
 MODULE = CGI::Struct::XS PACKAGE = CGI::Struct::XS
 
+PROTOTYPES: DISABLE
+
 HV*
 build_cgi_struct(HV* iv, ...)
 PREINIT:
     AV* err = NULL;
     HV* conf = NULL;
-    Opts opts = { 0, 1, 1, 0 };
+    Opts opts = { .nodot = 0, .nullsplit = 1, .dclone = 1, .debug = 0 };
     HE* pair = NULL;
     char* key = NULL;
     U32 klen = 0;
@@ -340,6 +372,9 @@ CODE:
     while (pair = hv_iternext(iv)) {
         key = hv_iterkey(pair, &klen);
         val = hv_iterval(iv, pair);
+        if (opts.dclone) {
+            val = _dclone(val);        
+        }
         _handle_pair(key, klen, val, err, &opts, RETVAL);
     }
 OUTPUT:

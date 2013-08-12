@@ -57,23 +57,22 @@ ok(grep(/Array index should be a number for a\[0bar\]/, @errs),
 # Bad starting char
 ok(grep(/Unexpected initial char '\{' for \{xyz/, @errs),
    "Got error for {xyz");
-diag(explain(\@errs));
 
 # No key
-ok(grep(/Zero-length name element found in h\{}/, @errs),
+ok(grep(/Zero-length key name for h\{}/, @errs),
    "Got error for h{}");
-ok(grep(/Zero-length name element found in h./, @errs),
+ok(grep(/Zero-length key name for h\./, @errs),
    "Got error for h.");
-ok(grep(/Zero-length name element found in h../, @errs),
+ok(grep(/Zero-length key name for h\.\./, @errs),
    "Got error for h..");
-ok(grep(/Zero-length name element found in h\{foo}.\{bar}/, @errs),
+ok(grep(/Zero-length key name for h\{foo}\.\{bar}/, @errs),
    "Got error for h{foo}.{bar}");
 
-# This mismatch could come in either order
-ok(grep(/already have [A-Z]+, expecting [a-z]+ for (1|xyz) in m(\[1]|\{xyz})/,
-        @errs),
-   "Got error for m{xyz}");
 
+# This mismatch could come in either order
+my $ok = scalar(grep /Type mismatch: m already used as ArrayRef for m\{xyz\}/, @errs) 
+      || scalar(grep /Type mismatch: m already used as HashRef for m\[1\]/, @errs);
+ok($ok, "Got error for m{xyz}");
 
 # Every line but one (the key that creates the mismatched type for that
 # test) should have an entry in the @errs.
