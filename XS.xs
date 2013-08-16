@@ -11,7 +11,8 @@
     })
 
 #define BUF_LEN 1024
-#define STATE_MASK 0xFF
+#define STATE_MASK  0x00FF
+#define ACTION_MASK 0xFF00
 #define DBG1(fmt, ...) if (opts->debug > 0) { fprintf(stderr, fmt, ##__VA_ARGS__); }
 #define DBG2(fmt, ...) if (opts->debug > 1) { fprintf(stderr, fmt, ##__VA_ARGS__); }
 
@@ -138,14 +139,43 @@ _dclone(SV* sv)
     return res;
 }
 
-static SV**
-_fetch(void* ptr, const char* part_key, U32 part_klen, U32 part_idx)
+static SV*
+_split(SV* val, Opts* opts)
 {
-    if (SvTYPE((SV*)ptr) == SVt_PVHV) {
-        return hv_fetch((HV*)ptr, part_key, part_klen, 0);
+    char* beg = SvPVX(val);
+    char* end = SvEND(val);
+    char* zer = (char*) memchr(beg, '\0', SvCUR(val));
+    DBG2("splitting beg %p end %p zer %p len %d cur %d\n", beg, end, zer, SvLEN(val), SvLEN(val));
+    if (zer && zer < end) {
+        AV* arr = newAV();
+        do {
+            DBG2("\tpushing beg %p zer %p part len %d\n", beg, zer, zer - beg);
+            av_push(arr, newSVpvn_utf8(beg, zer - beg, SvUTF8(val)));
+            beg = zer + 1;
+            zer = memchr(beg, '\0', end - beg);
+            DBG2("\tnext zer %p\n", zer);
+        } while (zer && zer <= end);
+        if (beg < end) {
+            av_push(arr, newSVpvn_utf8(beg, end - beg, SvUTF8(val)));
+        }
+        val = newRV_noinc((SV*)arr);
     }
-    else {
-        return av_fetch((AV*)ptr, part_idx, 0);
+    return val;
+}
+
+static void
+_copy_array(AV* tgt, AV* src)
+{
+    U32 i = 0;
+    U32 l = av_len(src); // last index
+    av_fill(tgt, l);
+    for (i = 0; i <= l; i++) {
+        // TODO: optimize copying
+        SV** el = av_fetch(src, i, 0);
+        if (el) { 
+            SvREFCNT_inc(*el);
+            av_store(tgt, i, *el);
+        }
     }
 }
 
@@ -153,7 +183,7 @@ static void
 _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Opts* opts)
 {
     if (SvTYPE((SV*)ptr) == SVt_PVHV) {
-        DBG1("hv_store ptr %p part_key '%s' park_klen %d val %p (type %d)\n", ptr, part_key, part_klen, val, SvTYPE(val));
+        DBG1("hv_store ptr %p part_key '%s' part_klen %d val %p (type %d)\n", ptr, part_key, part_klen, val, SvTYPE(val));
         hv_store((HV*)ptr, part_key, part_klen, val, 0);
     }
     else {
@@ -162,11 +192,38 @@ _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Op
     }
 }
 
+static SV*
+_next(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, svtype type, Opts* opts)
+{
+    SV** ref_ptr;
+    SV* next;
+    if (SvTYPE((SV*)ptr) == SVt_PVHV) {
+        ref_ptr = hv_fetch((HV*)ptr, part_key, part_klen, 0);
+    }
+    else {
+        ref_ptr = av_fetch((AV*)ptr, part_idx, 0);
+    }
+    if (!ref_ptr) {
+        next = type == SVt_PVHV ? (SV*)newHV() : (SV*)newAV();
+        _store(ptr, part_key, part_klen, part_idx, newRV_noinc((SV*)next), opts);
+    }
+    else {
+        if (SvROK(*ref_ptr) && SvTYPE(SvRV(*ref_ptr)) == type) {
+            next = SvRV(*ref_ptr);
+        }
+        else {
+            return NULL;
+        }
+    }
+    return next;
+}
+
 static void 
 _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, HV* ov)
 {
     U32 pos = 0;
     U32 mv = 0;
+    U32 ac = 0;
     Input inp = I_CH;
     State st = S_FN;
 
@@ -175,108 +232,63 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
     U32 part_klen = 0;
 
     void* ptr = ov;
-    void* next = NULL;
 
     DBG1("key '%s' klen %d\n", key, klen);
 
     for (pos = 0; pos <= klen && st < S_EN; pos++) {
         DBG1("chr %c %u\n", key[pos], key[pos]);
         DBG1("class %d\n", classes[key[pos]]);
+        
         inp = pos == klen ? I_EN : classes[key[pos]];
         if (inp == I_DT && opts->nodot) {
             inp = I_CH;
         }
         mv = machine[st][inp];
-
         DBG1("st %d pos %d chr '%c(%d)' inp %d -> st %d\n", st, pos, key[pos], (int)key[pos], inp, mv & STATE_MASK);
-
         st = mv & STATE_MASK;
-        if (mv & A_EC) {
-            part_klen++;
-        }
-        if (mv & A_ED) {
-            part_idx = part_idx * 10 + key[pos] - '0';
-        }
-        if (mv & A_CH) {
-            SV** next_ptr = _fetch(ptr, part_key, part_klen, part_idx);
-            if (!next_ptr) {
-                next = newHV();
-                _store(ptr, part_key, part_klen, part_idx, newRV_noinc((SV*)next), opts);
-            }
-            else {
-                if (SvROK(*next_ptr) && SvTYPE(SvRV(*next_ptr)) == SVt_PVHV) {
-                    next = SvRV(*next_ptr);
-                }
-                else {
+        ac = mv & ACTION_MASK;
+
+        switch (ac) {
+            case A_EC:
+                part_klen++;
+                break;
+            case A_ED:
+                part_idx = part_idx * 10 + key[pos] - '0';
+                break;
+            case A_CH:
+                ptr = _next(ptr, part_key, part_klen, part_idx, SVt_PVHV, opts);
+                if (!ptr) {
                     st = S_E5;
                 }
-            }
-            ptr = next;
-            part_key = key + pos + 1; 
-            part_klen = 0;
-            part_idx = 0;
-        }
-        if (mv & A_CA) {
-            SV** next_ptr = _fetch(ptr, part_key, part_klen, part_idx);
-            if (!next_ptr) {
-                next = newAV();
-                _store(ptr, part_key, part_klen, part_idx, newRV_noinc((SV*)next), opts);
-            }
-            else {
-                if (SvROK(*next_ptr) && SvTYPE(SvRV(*next_ptr)) == SVt_PVAV) {
-                    next = SvRV(*next_ptr);
-                }
-                else {
+                part_key = key + pos + 1; 
+                part_klen = 0;
+                part_idx = 0;
+                break;
+            case A_CA:
+                ptr = _next(ptr, part_key, part_klen, part_idx, SVt_PVAV, opts);
+                if (!ptr) {
                     st = S_E6;
                 }
-            }
-            ptr = next;
-            part_key = key + pos + 1; 
-            part_klen = 0;
-            part_idx = 0;
-        }
-        if (mv & A_CV) {
-            if (opts->nullsplit && SvPOK(val)) {
-                char* beg = SvPVX(val);
-                char* end = SvEND(val);
-                char* zer = (char*) memchr(beg, '\0', SvCUR(val));
-                DBG2("splitting beg %p end %p zer %p len %d cur %d\n", beg, end, zer, SvLEN(val), SvLEN(val));
-                if (zer && zer < end) {
-                    AV* val_arr = newAV();
-                    do {
-                        DBG2("\tpushing beg %p zer %p part len %d\n", beg, zer, zer - beg);
-                        av_push(val_arr, newSVpvn_utf8(beg, zer - beg, SvUTF8(val)));
-                        beg = zer + 1;
-                        zer = memchr(beg, '\0', end - beg);
-                        DBG2("\tnext zer %p\n", zer);
-                    } while (zer && zer <= end);
-                    if (beg < end) {
-                        av_push(val_arr, newSVpvn_utf8(beg, end - beg, SvUTF8(val)));
-                    }
-                    val = newRV_noinc((SV*)val_arr);
+                part_key = key + pos + 1; 
+                part_klen = 0;
+                part_idx = 0;
+                break;
+            case A_CV:
+                if (opts->nullsplit && SvPOK(val)) {
+                    val = _split(val, opts);
                 }
-            }
-            _store(ptr, part_key, part_klen, part_idx, newSVsv(val), opts);
-        }
-        if (mv & A_AA) {
-            if (SvROK(val) && SvTYPE(SvRV(val)) == SVt_PVAV) {
-                AV* _n = (AV*) next;
-                AV* _v = (AV*) SvRV(val);
-                U32 i = 0;
-                U32 l = av_len(_v); // last index
-                av_fill(_n, l);
-                for (i = 0; i <= l; i++) {
-                    // TODO: optimize copying
-                    SV** el = av_fetch(_v, i, 0);
-                    if (el) { 
-                        SvREFCNT_inc(*el);
-                        av_store(_n, i, *el);
-                    }
+                SvREFCNT_inc(val);
+                _store(ptr, part_key, part_klen, part_idx, val, opts);
+                break;
+            case A_AA:
+                if (SvROK(val) && SvTYPE(SvRV(val)) == SVt_PVAV) {
+                    _copy_array((AV*) ptr, (AV*) SvRV(val));
                 }
-            }
-            else {
-                _store(ptr, part_key, part_klen, part_idx, newSVsv(val), opts);
-            }
+                else {
+                    SvREFCNT_inc(val);
+                    _store(ptr, part_key, part_klen, part_idx, val, opts);
+                }
+                break;
         }
     }
     DBG1("final state %d\n\n", st);
