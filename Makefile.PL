@@ -16,8 +16,10 @@ WriteMakefile(
         'XSLoader'   => 0,
     },
     BUILD_REQUIRES => {
-        'Test::More' => 0,
-        'Test::Deep' => 0,
+        'Test::More'         => 0,
+        'Test::Deep'         => 0,
+        'Test::Deep::NoTest' => 0,
+        'Test::LeakTrace'    => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean               => { FILES => 'CGI-Struct-*' },

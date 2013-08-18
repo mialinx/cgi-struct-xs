@@ -13,8 +13,8 @@
 #define BUF_LEN 1024
 #define STATE_MASK  0x00FF
 #define ACTION_MASK 0xFF00
-#define DBG1(fmt, ...) if (opts->debug > 0) { fprintf(stderr, fmt, ##__VA_ARGS__); }
-#define DBG2(fmt, ...) if (opts->debug > 1) { fprintf(stderr, fmt, ##__VA_ARGS__); }
+#define DBG(fmt, ...) if (opts->debug > 0) { fprintf(stderr, fmt, ##__VA_ARGS__); }
+#define DUMP(s) do_sv_dump(0, Perl_debug_log, (s), 0, 1, 0, 0);
 
 typedef struct opts {
     U32 nodot;
@@ -145,20 +145,18 @@ _split(SV* val, Opts* opts)
     char* beg = SvPVX(val);
     char* end = SvEND(val);
     char* zer = (char*) memchr(beg, '\0', SvCUR(val));
-    DBG2("splitting beg %p end %p zer %p len %d cur %d\n", beg, end, zer, SvLEN(val), SvLEN(val));
     if (zer && zer < end) {
         AV* arr = newAV();
         do {
-            DBG2("\tpushing beg %p zer %p part len %d\n", beg, zer, zer - beg);
             av_push(arr, newSVpvn_utf8(beg, zer - beg, SvUTF8(val)));
             beg = zer + 1;
             zer = memchr(beg, '\0', end - beg);
-            DBG2("\tnext zer %p\n", zer);
-        } while (zer && zer <= end);
-        if (beg < end) {
+        } while (zer && zer < end);
+        if (beg <= end) {
             av_push(arr, newSVpvn_utf8(beg, end - beg, SvUTF8(val)));
         }
         val = newRV_noinc((SV*)arr);
+        sv_2mortal(val);
     }
     return val;
 }
@@ -183,11 +181,11 @@ static void
 _store(void* ptr, const char* part_key, U32 part_klen, U32 part_idx, SV* val, Opts* opts)
 {
     if (SvTYPE((SV*)ptr) == SVt_PVHV) {
-        DBG1("hv_store ptr %p part_key '%s' part_klen %d val %p (type %d)\n", ptr, part_key, part_klen, val, SvTYPE(val));
+        DBG("hv_store ptr %p part_key '%s' part_klen %u val %p (type %u)\n", ptr, part_key, part_klen, val, SvTYPE(val));
         hv_store((HV*)ptr, part_key, part_klen, val, 0);
     }
     else {
-        DBG1("av_store ptr %p part_idx %d val %p (type %d)\n", ptr, part_idx, val, SvTYPE(val));
+        DBG("av_store ptr %p part_idx %u val %p (type %u)\n", ptr, part_idx, val, SvTYPE(val));
         av_store((AV*)ptr, part_idx, val);
     }
 }
@@ -233,18 +231,18 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
 
     void* ptr = ov;
 
-    DBG1("key '%s' klen %d\n", key, klen);
+    DBG("key '%s' klen %u\n", key, klen);
 
     for (pos = 0; pos <= klen && st < S_EN; pos++) {
-        DBG1("chr %c %u\n", key[pos], key[pos]);
-        DBG1("class %d\n", classes[key[pos]]);
+        DBG("chr %c %u\n", key[pos], key[pos]);
+        DBG("class %u\n", classes[key[pos]]);
         
         inp = pos == klen ? I_EN : classes[key[pos]];
         if (inp == I_DT && opts->nodot) {
             inp = I_CH;
         }
         mv = machine[st][inp];
-        DBG1("st %d pos %d chr '%c(%d)' inp %d -> st %d\n", st, pos, key[pos], (int)key[pos], inp, mv & STATE_MASK);
+        DBG("st %u pos %u chr '%c(%u)' inp %u -> st %u\n", st, pos, key[pos], (int)key[pos], inp, mv & STATE_MASK);
         st = mv & STATE_MASK;
         ac = mv & ACTION_MASK;
 
@@ -291,7 +289,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                 break;
         }
     }
-    DBG1("final state %d\n\n", st);
+    DBG("final state %u\n\n", st);
 
     // normal return
     if (st == S_EN) {
@@ -329,7 +327,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                 ERR("Type mismatch: %s already used as HashRef for %s", _key_part(key, 0, pos-1), key);
                 break;
             default:
-                ERR("Internal: unexpected final state %d for %s", st, key); 
+                ERR("Internal: unexpected final state %u for %s", st, key); 
                 break;
         }
         # undef ERR
