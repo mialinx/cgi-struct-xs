@@ -21,5 +21,7 @@ t/04-dotted.t
 t/04-mixed.t
 t/05-bad.t
 t/05-copies.t
+t/05-edges.t
+t/05-leak.t
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)

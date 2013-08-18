@@ -22,5 +22,5 @@ WriteMakefile(
         'Test::LeakTrace'    => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
-    clean               => { FILES => 'CGI-Struct-*' },
+    clean               => { FILES => 'CGI-Struct-XS-*' },
 );
