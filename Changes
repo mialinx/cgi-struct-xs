@@ -1,5 +1,8 @@
 Revision history for CGI-Struct-XS
 
-1.01    2013-07-29
+1.02    2013-07-19
+        POD fixed
+
+1.01    2013-07-18
         First version
 
