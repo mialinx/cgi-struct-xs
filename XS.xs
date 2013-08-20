@@ -106,17 +106,6 @@ static U32 machine[][8] = {
 /*S_RC*/ {  S_FN|A_CH,    S_FI|A_CA,    S_E4,       S_FK|A_CH,    S_E4,         S_E4,       S_E4,       S_EN|A_CV }
 };
 
-static char*
-_key_part(const char* key, U32 from, U32 to)
-{
-    static char tmp[BUF_LEN];
-    U32 len = to - from;
-    U32 copy_len = BUF_LEN - 1 < len ? BUF_LEN - 1 : len;
-    strncpy(tmp, key + from, copy_len);
-    tmp[copy_len] = '\0';
-    return tmp;
-}
-
 static SV*
 _dclone(SV* sv)
 {
@@ -299,6 +288,7 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
     // error handling if needed
     if (err) {
         char msg[BUF_LEN];
+        char* key_prefix = NULL;
         # define ERR(fmt, ...) snprintf(msg, sizeof(msg), fmt, ##__VA_ARGS__);
         switch (st) {
             case S_EN:
@@ -321,10 +311,10 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                 ERR("Delimeter expected at %s for %s", key + pos, key);
                 break;
             case S_E5:
-                ERR("Type mismatch: %s already used as ArrayRef for %s", _key_part(key, 0, pos-1), key);
-                break;
             case S_E6:
-                ERR("Type mismatch: %s already used as HashRef for %s", _key_part(key, 0, pos-1), key);
+                key_prefix = strndup(key, pos - 1);
+                ERR("Type mismatch: %s already used as %s for %s", key_prefix, (st == S_E5 ? "ArrayRef" : "HashRef"), key);
+                free(key_prefix);
                 break;
             default:
                 ERR("Internal: unexpected final state %u for %s", st, key); 

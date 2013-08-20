@@ -7,10 +7,10 @@ use XSLoader;
 use Exporter qw(import);
 use Storable qw(dclone);
 
-our $VERSION = 1.02;
+our $VERSION = 1.03;
 our @EXPORT = qw(build_cgi_struct);
 
-XSLoader::load();
+XSLoader::load(__PACKAGE__, $VERSION);
 
 1;
 

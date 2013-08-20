@@ -1,5 +1,9 @@
 Revision history for CGI-Struct-XS
 
+1.03    2013-07-21
+        XSLoader v0.10 support
+        thread safety fixes
+
 1.02    2013-07-19
         POD fixed
 
