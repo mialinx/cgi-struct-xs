@@ -1,5 +1,8 @@
 Revision history for CGI-Struct-XS
 
+1.04    2013-07-24
+        support for solaris and win
+
 1.03    2013-07-21
         XSLoader v0.10 support
         thread safety fixes

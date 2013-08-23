@@ -10,6 +10,15 @@
         val ? SvUV(*val) : (default);                   \
     })
 
+#ifndef newSVpvn_utf8
+#define newSVpvn_utf8(ptr, len, utf8)      \
+    ({                                     \
+        SV* copy = newSVpvn((ptr), (len)); \
+        if (utf8) { SvUTF8_on(copy); }     \
+        copy;                              \
+    })
+#endif
+
 #define BUF_LEN 1024
 #define STATE_MASK  0x00FF
 #define ACTION_MASK 0xFF00
@@ -111,10 +120,10 @@ _dclone(SV* sv)
 {
     I32 count;
     SV* res;
+    dSP;
     if (!SvROK(sv)) {
         return sv_mortalcopy(sv);
     }
-    dSP;
     PUSHMARK(SP);
     XPUSHs(sv);
     PUTBACK;
@@ -312,7 +321,9 @@ _handle_pair(const unsigned char* key, U32 klen, SV* val, AV* err, Opts* opts, H
                 break;
             case S_E5:
             case S_E6:
-                key_prefix = strndup(key, pos - 1);
+                key_prefix = (char*) malloc(pos);
+                strncpy(key_prefix, key, pos - 1);
+                key_prefix[pos-1] = '\0';
                 ERR("Type mismatch: %s already used as %s for %s", key_prefix, (st == S_E5 ? "ArrayRef" : "HashRef"), key);
                 free(key_prefix);
                 break;

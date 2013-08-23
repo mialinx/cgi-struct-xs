@@ -12,10 +12,8 @@ WriteMakefile(
       : ()),
     PL_FILES            => {},
     PREREQ_PM => {
-        'Storable'   => 0,
-        'XSLoader'   => 0,
-    },
-    BUILD_REQUIRES => {
+        'Storable'           => 0,
+        'XSLoader'           => 0,
         'Test::More'         => 0,
         'Test::Deep'         => 0,
         'Test::Deep::NoTest' => 0,
